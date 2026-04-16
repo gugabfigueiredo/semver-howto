@@ -2,7 +2,7 @@
 # resolve-version.sh — collision-aware SemVer RC resolver
 #
 # Usage:
-#   resolve-version.sh [--paths "p1 p2"] [--promote] [--remote origin] [--help]
+#   resolve-version.sh [--paths "p1 p2"] [--prefix mod/] [--tag] [--minor|--patch] [--promote] [--help]
 #
 # Output: single tag on stdout. Diagnostics on stderr.
 # Exit 0 = success, 1 = error, 2 = ambiguous (needs human).
@@ -10,6 +10,8 @@
 set -euo pipefail
 
 PATHS=""
+PREFIX=""
+PREFIX_SET=false
 PROMOTE=false
 TAG=false
 BUMP=""
@@ -23,6 +25,8 @@ resolve-version.sh — propose the next collision-free SemVer RC tag.
 FLAGS
   --paths "a b"   Explicit impact-zone paths (space-separated).
                   Default: auto-detect from diff against default branch.
+  --prefix NAME   Force tag prefix (e.g. "salesforce/"). Default: inferred
+                  from impact-zone paths + existing tag patterns.
   --tag           Create the resolved RC tag and push it. RC tags only.
   --minor         Force a minor bump (overrides commit-message detection).
   --patch         Force a patch bump (overrides commit-message detection).
@@ -31,17 +35,11 @@ FLAGS
   --remote NAME   Remote to pre-flight against (default: origin).
   --help          This message.
 
-ALGORITHM (resolve)
-  1. Detect impact zone (modified paths). If none, fall back to HEAD.
-  2. Find nearest tag via git-describe --match.
-  3. If no tags exist anywhere → bootstrap v0.1.0-rc1.
-  4. If no changes detected → report current version.
-  5. Bump: feat: → minor, else patch.
-  6. Walk collisions locally + remotely until a free -rc slot is found.
-
-ALGORITHM (--promote)
-  1. Find highest -rc tag in repo (or scoped by --paths prefix).
-  2. Strip -rc suffix, verify clean tag is free, propose it.
+PREFIX INFERENCE
+  1. Extract common root directory from impact-zone paths.
+  2. If tags matching "<root>/v*" exist → use "<root>/" as prefix.
+  3. Otherwise fall back to "" (flat repo, tags like v1.2.3).
+  --prefix overrides this entirely.
 EOF
   exit 0
 }
@@ -49,6 +47,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --paths)   PATHS="$2"; shift 2 ;;
+    --prefix)  PREFIX="$2"; PREFIX_SET=true; shift 2 ;;
     --tag)     TAG=true; shift ;;
     --minor)   BUMP="minor"; shift ;;
     --patch)   BUMP="patch"; shift ;;
@@ -80,7 +79,6 @@ tag_exists_local()  { git tag -l "$1" | grep -q .; }
 tag_exists_remote() { git ls-remote --tags "$REMOTE" "refs/tags/$1" 2>/dev/null | grep -q .; }
 tag_is_taken()      { tag_exists_local "$1" || tag_exists_remote "$1"; }
 
-# parse_tag TAG → sets PREFIX, MAJOR, MINOR, PATCH
 parse_tag() {
   if [[ "$1" =~ ^(.*)(v([0-9]+)\.([0-9]+)\.([0-9]+))(.*) ]]; then
     PREFIX="${BASH_REMATCH[1]}"
@@ -92,9 +90,45 @@ parse_tag() {
   fi
 }
 
+# infer_prefix "path1 path2 ..." → sets PREFIX if not already forced
+infer_prefix() {
+  [[ "$PREFIX_SET" == true ]] && return
+
+  local paths="$1"
+  # extract first path component from each path, find common root
+  local roots root
+  roots=$(echo "$paths" | tr ' ' '\n' | sed 's|/.*||' | sort -u)
+  local count
+  count=$(echo "$roots" | wc -l | tr -d ' ')
+
+  if [[ "$count" -eq 1 ]]; then
+    root=$(echo "$roots" | head -1)
+    # check if module-prefixed tags exist for this root
+    if git tag -l "${root}/v*" | grep -q .; then
+      PREFIX="${root}/"
+      info "inferred prefix: ${PREFIX} (from existing tags)"
+      return
+    fi
+    # check remote too
+    if git ls-remote --tags "$REMOTE" "refs/tags/${root}/v*" 2>/dev/null | grep -q .; then
+      PREFIX="${root}/"
+      info "inferred prefix: ${PREFIX} (from remote tags)"
+      return
+    fi
+  fi
+
+  # no module prefix found — flat repo
+  PREFIX=""
+}
+
 # ── promote ──────────────────────────────────────────────────────────
 if [[ "$PROMOTE" == true ]]; then
-  LATEST_RC=$(git tag -l "*v*-rc*" | sort -V | tail -1)
+  # if prefix known, scope to it; otherwise scan all
+  if [[ "$PREFIX_SET" == true ]]; then
+    LATEST_RC=$(git tag -l "${PREFIX}v*-rc*" | sort -V | tail -1)
+  else
+    LATEST_RC=$(git tag -l "*v*-rc*" | sort -V | tail -1)
+  fi
   if [[ -z "$LATEST_RC" ]]; then
     info "no RC tags found — nothing to promote"
     echo "none"
@@ -133,7 +167,14 @@ if [[ -z "$PATHS" ]]; then
   [[ -z "$PATHS" ]] && HAS_CHANGES=false
 fi
 
+# ── infer prefix from paths ─────────────────────────────────────────
+if [[ "$HAS_CHANGES" == true ]]; then
+  infer_prefix "$PATHS"
+fi
+
 # ── resolve nearest tag ─────────────────────────────────────────────
+MATCH_PATTERN="${PREFIX}v*"
+
 if [[ "$HAS_CHANGES" == true ]]; then
   info "impact zone: $PATHS"
   # shellcheck disable=SC2086
@@ -143,12 +184,18 @@ else
 fi
 [[ -n "$ANCHOR" ]] || die "no commits found"
 
-NEAREST_TAG=$(git describe --tags --abbrev=0 --match "*v*" "$ANCHOR" 2>/dev/null) || true
+NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" "$ANCHOR" 2>/dev/null) || true
 
-# ── no tags anywhere → bootstrap ────────────────────────────────────
+# ── no tags → bootstrap ─────────────────────────────────────────────
 if [[ -z "$NEAREST_TAG" ]]; then
+  CANDIDATE="${PREFIX}v0.1.0-rc1"
   info "no prior tag found — bootstrap"
-  echo "v0.1.0-rc1"
+  if [[ "$TAG" == true ]]; then
+    git tag "$CANDIDATE"
+    git push "$REMOTE" "$CANDIDATE"
+    info "tagged and pushed: ${CANDIDATE}"
+  fi
+  echo "$CANDIDATE"
   exit 0
 fi
 
@@ -164,7 +211,6 @@ fi
 
 # ── determine bump ───────────────────────────────────────────────────
 if [[ -z "$BUMP" ]]; then
-  # auto-detect from commit subjects
   # shellcheck disable=SC2086
   SUBJECTS=$(git log --format=%s "${NEAREST_TAG}..HEAD" -- $PATHS 2>/dev/null) || true
   if echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?!?:'; then
@@ -188,7 +234,6 @@ WALK=0
 while [[ $WALK -lt $MAX_WALK ]]; do
   BASE="${PREFIX}v${TARGET_MAJOR}.${TARGET_MINOR}.${TARGET_PATCH}"
 
-  # clean base taken → skip to next patch
   if tag_is_taken "$BASE"; then
     info "  ${BASE} taken — incrementing patch"
     TARGET_PATCH=$((TARGET_PATCH + 1))
@@ -196,7 +241,6 @@ while [[ $WALK -lt $MAX_WALK ]]; do
     continue
   fi
 
-  # find highest existing RC for this base
   EXISTING_RCS=$(git tag -l "${BASE}-rc*" | sort -V)
   if [[ -n "$EXISTING_RCS" ]]; then
     LAST_RC=$(echo "$EXISTING_RCS" | tail -1)
@@ -208,7 +252,6 @@ while [[ $WALK -lt $MAX_WALK ]]; do
 
   CANDIDATE="${BASE}-rc${NEXT_RC}"
 
-  # shallow pre-flight against remote
   if tag_exists_remote "$CANDIDATE"; then
     info "  ${CANDIDATE} taken on remote — incrementing RC"
     NEXT_RC=$((NEXT_RC + 1))

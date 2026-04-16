@@ -20,6 +20,7 @@ resolve-version.sh --promote    # propose clean tag (HITL — see below)
 ## Constraints
 
 - Autonomous output is always `-rc[n]`. The script refuses to create clean tags.
-- `--promote` proposes a clean release and prints the `git tag` + `git push`
-  commands. **You must present this to the human and wait for explicit approval.**
-  Never create or push clean release tags autonomously.
+- `--promote` requires **explicit user request** (e.g. "promote", "release",
+  "cut a release"). Never run `--promote` on your own initiative.
+  When the user asks, run the script — it outputs the proposed clean tag and
+  the exact `git tag` + `git push` commands. Execute those commands for the user.
