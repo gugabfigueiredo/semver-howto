@@ -11,6 +11,8 @@ set -euo pipefail
 
 PATHS=""
 PROMOTE=false
+TAG=false
+BUMP=""
 REMOTE="origin"
 DEFAULT_BRANCH=""
 
@@ -21,7 +23,11 @@ resolve-version.sh — propose the next collision-free SemVer RC tag.
 FLAGS
   --paths "a b"   Explicit impact-zone paths (space-separated).
                   Default: auto-detect from diff against default branch.
-  --promote       Propose clean tag from the highest existing RC. No push.
+  --tag           Create the resolved RC tag and push it. RC tags only.
+  --minor         Force a minor bump (overrides commit-message detection).
+  --patch         Force a patch bump (overrides commit-message detection).
+  --promote       Propose clean tag from the highest existing RC.
+                  HITL required — never tags or pushes autonomously.
   --remote NAME   Remote to pre-flight against (default: origin).
   --help          This message.
 
@@ -43,6 +49,9 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --paths)   PATHS="$2"; shift 2 ;;
+    --tag)     TAG=true; shift ;;
+    --minor)   BUMP="minor"; shift ;;
+    --patch)   BUMP="patch"; shift ;;
     --promote) PROMOTE=true; shift ;;
     --remote)  REMOTE="$2"; shift 2 ;;
     --help)    usage ;;
@@ -101,6 +110,8 @@ if [[ "$PROMOTE" == true ]]; then
     exit 0
   fi
   info "promote: ${LATEST_RC} → ${CLEAN_TAG}"
+  info "HITL REQUIRED — human must approve, tag, and push:"
+  info "  git tag ${CLEAN_TAG} ${LATEST_RC}^{} && git push origin ${CLEAN_TAG}"
   echo "$CLEAN_TAG"
   exit 0
 fi
@@ -152,11 +163,19 @@ if [[ "$HAS_CHANGES" == false ]]; then
 fi
 
 # ── determine bump ───────────────────────────────────────────────────
-# shellcheck disable=SC2086
-SUBJECTS=$(git log --format=%s "${NEAREST_TAG}..HEAD" -- $PATHS 2>/dev/null) || true
+if [[ -z "$BUMP" ]]; then
+  # auto-detect from commit subjects
+  # shellcheck disable=SC2086
+  SUBJECTS=$(git log --format=%s "${NEAREST_TAG}..HEAD" -- $PATHS 2>/dev/null) || true
+  if echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?!?:'; then
+    BUMP="minor"
+  else
+    BUMP="patch"
+  fi
+fi
 
-if echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?!?:'; then
-  info "bump: minor (feat: detected)"
+if [[ "$BUMP" == "minor" ]]; then
+  info "bump: minor"
   TARGET_MAJOR=$MAJOR; TARGET_MINOR=$((MINOR + 1)); TARGET_PATCH=0
 else
   info "bump: patch"
@@ -202,6 +221,11 @@ while [[ $WALK -lt $MAX_WALK ]]; do
   fi
 
   info "resolved: ${CANDIDATE}"
+  if [[ "$TAG" == true ]]; then
+    git tag "$CANDIDATE"
+    git push "$REMOTE" "$CANDIDATE"
+    info "tagged and pushed: ${CANDIDATE}"
+  fi
   echo "$CANDIDATE"
   exit 0
 done

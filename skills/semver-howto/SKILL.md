@@ -24,19 +24,25 @@ Do **not** invoke for commit-message authoring or changelog generation.
 1. **Impact Zone**: modified paths → `git log -1 -- <paths>` → `git describe
    --match "*v*" <commit>`. Never widens to all tags on a monorepo.
 2. **Bump**: `feat:` in impact-zone commits → minor; else patch. Major is
-   never autonomous.
+   never autonomous. Override with `--minor` or `--patch` when the agent
+   evaluates that commit messages don't reflect the true scope of changes.
 3. **Collision**: pattern-scoped `git tag -l` locally, then targeted
    `git ls-remote --tags origin "refs/tags/<candidate>"` for shallow
    pre-flight. Walks forward through taken addresses.
 4. **RC-only**: autonomous output is always `-rc[n]`. Clean tags are refused.
-5. **Propose, don't push**: stdout = one tag. The human (or a promotion
-   workflow) performs the mutation.
+5. **`--tag` creates and pushes RC tags**: safe for CI and agents. Only
+   applies to `-rc[n]` tags — the script will never create a clean tag.
+6. **HITL on `--promote`**: outputs a clean tag proposal and the exact
+   `git tag` + `git push` commands. The agent MUST present this to the
+   human and wait for explicit approval. Agents are **never authorized**
+   to create or push clean release tags autonomously.
 
 ## Usage
 
 ```sh
 ./skills/semver-howto/scripts/resolve-version.sh              # propose next -rc[n]
-./skills/semver-howto/scripts/resolve-version.sh --promote    # strip -rc from highest RC
+./skills/semver-howto/scripts/resolve-version.sh --tag        # resolve, tag, and push RC
+./skills/semver-howto/scripts/resolve-version.sh --promote    # propose clean tag (HITL)
 ./skills/semver-howto/scripts/resolve-version.sh --paths "a b" # explicit impact zone
 ./skills/semver-howto/scripts/resolve-version.sh --help       # flags + algorithm notes
 ```

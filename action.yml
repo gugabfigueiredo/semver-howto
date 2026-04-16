@@ -1,0 +1,34 @@
+name: semver-howto
+description: Collision-aware SemVer RC resolver
+
+inputs:
+  tag:
+    description: "Create and push the resolved RC tag (true/false)"
+    required: false
+    default: "true"
+  paths:
+    description: "Space-separated impact-zone paths (auto-detected if empty)"
+    required: false
+    default: ""
+  remote:
+    description: "Git remote name"
+    required: false
+    default: origin
+
+outputs:
+  version:
+    description: "The proposed tag"
+    value: ${{ steps.run.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      run: |
+        ARGS=""
+        [[ "${{ inputs.tag }}" == "true" ]] && ARGS="--tag"
+        [[ -n "${{ inputs.paths }}" ]] && ARGS="$ARGS --paths '${{ inputs.paths }}'"
+        [[ "${{ inputs.remote }}" != "origin" ]] && ARGS="$ARGS --remote ${{ inputs.remote }}"
+        VERSION=$(eval "${{ github.action_path }}/skills/semver-howto/scripts/resolve-version.sh $ARGS")
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
