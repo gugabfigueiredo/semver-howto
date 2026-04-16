@@ -13,6 +13,7 @@ PATHS=""
 PREFIX=""
 PREFIX_SET=false
 PROMOTE=false
+RELEASE=false
 TAG=false
 BUMP=""
 REMOTE="origin"
@@ -28,10 +29,11 @@ FLAGS
   --prefix NAME   Force tag prefix (e.g. "salesforce/"). Default: inferred
                   from impact-zone paths + existing tag patterns.
   --tag           Create the resolved RC tag and push it. RC tags only.
+  --release       Resolve, create, and push a clean version tag directly.
+                  Skips RC. Requires explicit user request.
   --minor         Force a minor bump (overrides commit-message detection).
   --patch         Force a patch bump (overrides commit-message detection).
-  --promote       Propose clean tag from the highest existing RC.
-                  HITL required — never tags or pushes autonomously.
+  --promote       Promote the highest existing RC to a clean release tag.
   --remote NAME   Remote to pre-flight against (default: origin).
   --help          This message.
 
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --paths)   PATHS="$2"; shift 2 ;;
     --prefix)  PREFIX="$2"; PREFIX_SET=true; shift 2 ;;
     --tag)     TAG=true; shift ;;
+    --release) RELEASE=true; shift ;;
     --minor)   BUMP="minor"; shift ;;
     --patch)   BUMP="patch"; shift ;;
     --promote) PROMOTE=true; shift ;;
@@ -144,8 +147,9 @@ if [[ "$PROMOTE" == true ]]; then
     exit 0
   fi
   info "promote: ${LATEST_RC} → ${CLEAN_TAG}"
-  info "HITL REQUIRED — human must approve, tag, and push:"
-  info "  git tag ${CLEAN_TAG} ${LATEST_RC}^{} && git push origin ${CLEAN_TAG}"
+  git tag "$CLEAN_TAG" "${LATEST_RC}^{}"
+  git push "$REMOTE" "$CLEAN_TAG"
+  info "tagged and pushed: ${CLEAN_TAG}"
   echo "$CLEAN_TAG"
   exit 0
 fi
@@ -188,9 +192,13 @@ NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" "$ANCHOR" 
 
 # ── no tags → bootstrap ─────────────────────────────────────────────
 if [[ -z "$NEAREST_TAG" ]]; then
-  CANDIDATE="${PREFIX}v0.1.0-rc1"
+  if [[ "$RELEASE" == true ]]; then
+    CANDIDATE="${PREFIX}v0.1.0"
+  else
+    CANDIDATE="${PREFIX}v0.1.0-rc1"
+  fi
   info "no prior tag found — bootstrap"
-  if [[ "$TAG" == true ]]; then
+  if [[ "$TAG" == true || "$RELEASE" == true ]]; then
     git tag "$CANDIDATE"
     git push "$REMOTE" "$CANDIDATE"
     info "tagged and pushed: ${CANDIDATE}"
@@ -250,21 +258,25 @@ while [[ $WALK -lt $MAX_WALK ]]; do
     NEXT_RC=1
   fi
 
-  CANDIDATE="${BASE}-rc${NEXT_RC}"
-
-  if tag_exists_remote "$CANDIDATE"; then
-    info "  ${CANDIDATE} taken on remote — incrementing RC"
-    NEXT_RC=$((NEXT_RC + 1))
+  if [[ "$RELEASE" == true ]]; then
+    CANDIDATE="$BASE"
+  else
     CANDIDATE="${BASE}-rc${NEXT_RC}"
-    if tag_is_taken "$CANDIDATE"; then
-      TARGET_PATCH=$((TARGET_PATCH + 1))
-      WALK=$((WALK + 1))
-      continue
+
+    if tag_exists_remote "$CANDIDATE"; then
+      info "  ${CANDIDATE} taken on remote — incrementing RC"
+      NEXT_RC=$((NEXT_RC + 1))
+      CANDIDATE="${BASE}-rc${NEXT_RC}"
+      if tag_is_taken "$CANDIDATE"; then
+        TARGET_PATCH=$((TARGET_PATCH + 1))
+        WALK=$((WALK + 1))
+        continue
+      fi
     fi
   fi
 
   info "resolved: ${CANDIDATE}"
-  if [[ "$TAG" == true ]]; then
+  if [[ "$TAG" == true || "$RELEASE" == true ]]; then
     git tag "$CANDIDATE"
     git push "$REMOTE" "$CANDIDATE"
     info "tagged and pushed: ${CANDIDATE}"
