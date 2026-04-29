@@ -1,26 +1,33 @@
 ---
 name: semver-howto
-description: Collision-aware SemVer tag resolver. Run resolve-version.sh to propose or create version tags. RC tags are the default; clean releases require explicit user request via --release or --promote.
+description: Collision-aware SemVer tag resolver. Default run is dry-run — proposes tags. Use --tag or --release with a specific version to act. --promote and --release require explicit user request.
 type: skill
 ---
 
 # semver-howto
 
-Run [`scripts/resolve-version.sh`](scripts/resolve-version.sh) to resolve the
-next available SemVer tag. Use `--help` for the full algorithm.
+Run [`scripts/resolve-version.sh`](scripts/resolve-version.sh). Default is
+dry-run — proposes tags on stdout, no side effects. Use `--help` for all flags.
 
 ```sh
-resolve-version.sh              # propose next -rc[n]
-resolve-version.sh --tag        # resolve, create, and push RC
-resolve-version.sh --release    # resolve, create, and push clean tag (no RC)
-resolve-version.sh --promote    # promote highest RC to clean release
-resolve-version.sh --minor      # force minor bump
-resolve-version.sh --patch      # force patch bump
+resolve-version.sh                          # propose next -rc[n] per module
+resolve-version.sh --tag <version>          # create and push a specific RC
+resolve-version.sh --release <version>      # create and push a specific clean tag
+resolve-version.sh --promote                # promote highest RC to clean release
+resolve-version.sh --minor                  # force minor bump in proposals
+resolve-version.sh --patch                  # force patch bump in proposals
 ```
+
+## Workflow
+
+1. Run the script with no action flags → read proposed tags from stdout.
+2. Evaluate the proposals. Drop any that aren't warranted (e.g. only docs
+   changed, or files don't justify a version bump).
+3. For each approved proposal, call back with `--tag <version>` or
+   `--release <version>`.
 
 ## Constraints
 
-- Default output is always `-rc[n]`. Use `--tag` to create and push RCs.
-- `--release` and `--promote` create clean version tags. Only use these
-  when the user explicitly asks (e.g. "release", "skip RC", "promote",
-  "cut a release"). Never run these on your own initiative.
+- `--tag` only accepts RC versions (`-rc[n]`). Safe for agents and CI.
+- `--release` and `--promote` create clean tags. Only use when the user
+  explicitly asks (e.g. "release", "skip RC", "promote").

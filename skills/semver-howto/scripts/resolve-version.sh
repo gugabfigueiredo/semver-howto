@@ -1,57 +1,46 @@
 #!/usr/bin/env bash
 # resolve-version.sh — collision-aware SemVer RC resolver
 #
-# Usage:
-#   resolve-version.sh [--paths "p1 p2"] [--prefix mod/] [--tag] [--minor|--patch] [--promote] [--help]
+# Default: proposes tags (dry-run). Use --tag/--release to act.
 #
-# Output: single tag on stdout. Diagnostics on stderr.
-# Exit 0 = success, 1 = error, 2 = ambiguous (needs human).
+# Output: one proposed tag per line on stdout. Diagnostics on stderr.
+# Exit 0 = success, 1 = error.
 
 set -euo pipefail
 
-PATHS=""
 PREFIX=""
 PREFIX_SET=false
+TAG_VERSION=""
+RELEASE_VERSION=""
 PROMOTE=false
-RELEASE=false
-TAG=false
 BUMP=""
 REMOTE="origin"
-DEFAULT_BRANCH=""
 
 usage() {
   cat >&2 <<'EOF'
-resolve-version.sh — propose the next collision-free SemVer RC tag.
+resolve-version.sh — propose or create collision-free SemVer tags.
+
+MODES
+  (default)             Propose next RC tag(s). Dry-run, no side effects.
+  --tag VERSION         Create and push a specific RC tag.
+  --release VERSION     Create and push a specific clean tag.
+  --promote             Promote highest RC to clean release tag.
 
 FLAGS
-  --paths "a b"   Explicit impact-zone paths (space-separated).
-                  Default: auto-detect from diff against default branch.
-  --prefix NAME   Force tag prefix (e.g. "salesforce/"). Default: inferred
-                  from impact-zone paths + existing tag patterns.
-  --tag           Create the resolved RC tag and push it. RC tags only.
-  --release       Resolve, create, and push a clean version tag directly.
-                  Skips RC. Requires explicit user request.
-  --minor         Force a minor bump (overrides commit-message detection).
-  --patch         Force a patch bump (overrides commit-message detection).
-  --promote       Promote the highest existing RC to a clean release tag.
+  --prefix NAME   Scope to a single module prefix (e.g. "billing/").
+  --minor         Force minor bump (overrides commit-message detection).
+  --patch         Force patch bump (overrides commit-message detection).
   --remote NAME   Remote to pre-flight against (default: origin).
   --help          This message.
-
-PREFIX INFERENCE
-  1. Extract common root directory from impact-zone paths.
-  2. If tags matching "<root>/v*" exist → use "<root>/" as prefix.
-  3. Otherwise fall back to "" (flat repo, tags like v1.2.3).
-  --prefix overrides this entirely.
 EOF
   exit 0
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --paths)   PATHS="$2"; shift 2 ;;
     --prefix)  PREFIX="$2"; PREFIX_SET=true; shift 2 ;;
-    --tag)     TAG=true; shift ;;
-    --release) RELEASE=true; shift ;;
+    --tag)     TAG_VERSION="$2"; shift 2 ;;
+    --release) RELEASE_VERSION="$2"; shift 2 ;;
     --minor)   BUMP="minor"; shift ;;
     --patch)   BUMP="patch"; shift ;;
     --promote) PROMOTE=true; shift ;;
@@ -64,19 +53,6 @@ done
 # ── helpers ───────────────────────────────────────────────────────────
 info()  { echo >&2 "[semver] $*"; }
 die()   { echo >&2 "[semver] ERROR: $*"; exit 1; }
-
-resolve_default_branch() {
-  DEFAULT_BRANCH=$(git symbolic-ref "refs/remotes/${REMOTE}/HEAD" 2>/dev/null \
-    | sed "s|refs/remotes/${REMOTE}/||") || true
-  if [[ -z "$DEFAULT_BRANCH" ]]; then
-    for b in main master; do
-      if git rev-parse --verify "${REMOTE}/${b}" &>/dev/null; then
-        DEFAULT_BRANCH="$b"; break
-      fi
-    done
-  fi
-  [[ -n "$DEFAULT_BRANCH" ]] || die "cannot determine default branch"
-}
 
 tag_exists_local()  { git tag -l "$1" | grep -q .; }
 tag_exists_remote() { git ls-remote --tags "$REMOTE" "refs/tags/$1" 2>/dev/null | grep -q .; }
@@ -93,40 +69,33 @@ parse_tag() {
   fi
 }
 
-# infer_prefix "path1 path2 ..." → sets PREFIX if not already forced
-infer_prefix() {
-  [[ "$PREFIX_SET" == true ]] && return
-
-  local paths="$1"
-  # extract first path component from each path, find common root
-  local roots root
-  roots=$(echo "$paths" | tr ' ' '\n' | sed 's|/.*||' | sort -u)
-  local count
-  count=$(echo "$roots" | wc -l | tr -d ' ')
-
-  if [[ "$count" -eq 1 ]]; then
-    root=$(echo "$roots" | head -1)
-    # check if module-prefixed tags exist for this root
-    if git tag -l "${root}/v*" | grep -q .; then
-      PREFIX="${root}/"
-      info "inferred prefix: ${PREFIX} (from existing tags)"
-      return
-    fi
-    # check remote too
-    if git ls-remote --tags "$REMOTE" "refs/tags/${root}/v*" 2>/dev/null | grep -q .; then
-      PREFIX="${root}/"
-      info "inferred prefix: ${PREFIX} (from remote tags)"
-      return
-    fi
+create_and_push() {
+  local version="$1"
+  if tag_is_taken "$version"; then
+    die "${version} already exists"
   fi
-
-  # no module prefix found — flat repo
-  PREFIX=""
+  git tag "$version"
+  git push "$REMOTE" "$version"
+  info "tagged and pushed: ${version}"
+  echo "$version"
 }
 
-# ── promote ──────────────────────────────────────────────────────────
+# ── tag: create a specific RC tag ────────────────────────────────────
+if [[ -n "$TAG_VERSION" ]]; then
+  [[ "$TAG_VERSION" == *-rc* ]] || die "--tag only creates RC tags: ${TAG_VERSION}"
+  create_and_push "$TAG_VERSION"
+  exit 0
+fi
+
+# ── release: create a specific clean tag ─────────────────────────────
+if [[ -n "$RELEASE_VERSION" ]]; then
+  [[ "$RELEASE_VERSION" != *-rc* ]] || die "--release creates clean tags only: ${RELEASE_VERSION}"
+  create_and_push "$RELEASE_VERSION"
+  exit 0
+fi
+
+# ── promote: highest RC → clean tag ─────────────────────────────────
 if [[ "$PROMOTE" == true ]]; then
-  # if prefix known, scope to it; otherwise scan all
   if [[ "$PREFIX_SET" == true ]]; then
     LATEST_RC=$(git tag -l "${PREFIX}v*-rc*" | sort -V | tail -1)
   else
@@ -137,162 +106,202 @@ if [[ "$PROMOTE" == true ]]; then
     echo "none"
     exit 0
   fi
-
   parse_tag "$LATEST_RC"
   CLEAN_TAG="${PREFIX}v${MAJOR}.${MINOR}.${PATCH}"
-
   if tag_is_taken "$CLEAN_TAG"; then
     info "${CLEAN_TAG} already released"
     echo "$CLEAN_TAG"
     exit 0
   fi
   info "promote: ${LATEST_RC} → ${CLEAN_TAG}"
-  git tag "$CLEAN_TAG" "${LATEST_RC}^{}"
-  git push "$REMOTE" "$CLEAN_TAG"
-  info "tagged and pushed: ${CLEAN_TAG}"
-  echo "$CLEAN_TAG"
+  create_and_push "$CLEAN_TAG"
   exit 0
 fi
 
-# ── detect impact zone & resolve nearest tag ────────────────────────
-HAS_CHANGES=true
-MATCH_PATTERN="${PREFIX}v*"
+# ══════════════════════════════════════════════════════════════════════
+# RESOLVE MODE (dry-run) — propose tags, no side effects
+# ══════════════════════════════════════════════════════════════════════
+
+# latest_tags → one line per prefix: "prefix|tag" (highest version per prefix)
+latest_tags() {
+  local all_tags tag prefix seen=""
+  all_tags=$(git tag --merged HEAD --sort=-version:refname | grep -E '(^|/)v[0-9]+\.[0-9]+\.[0-9]+') || true
+  [[ -z "$all_tags" ]] && return
+  while IFS= read -r tag; do
+    [[ -z "$tag" ]] && continue
+    [[ "$tag" =~ ^(.*)(v[0-9]+\.[0-9]+\.[0-9]+) ]] || continue
+    prefix="${BASH_REMATCH[1]}"
+    echo "$seen" | grep -qF "|${prefix}|" && continue
+    seen="${seen}|${prefix}|"
+    echo "${prefix}|${tag}"
+  done <<< "$all_tags"
+}
+
+repo_has_prefixed_tags() {
+  git tag -l "*/v*" | grep -q . 2>/dev/null
+}
+
+# ── 1. list latest tags ─────────────────────────────────────────────
+TAG_LIST=$(latest_tags)
+
+if [[ -z "$TAG_LIST" ]]; then
+  info "no tags found — bootstrap"
+  echo "${PREFIX}v0.1.0-rc1"
+  exit 0
+fi
+
+info "latest tags:"
+echo "$TAG_LIST" | while IFS='|' read -r _ t; do info "  ${t}"; done
+
+# ── 2. diff from nearest tag to HEAD ────────────────────────────────
+NEWEST_TAG=""
+SMALLEST_DIST=999999
+while IFS='|' read -r _ t; do
+  dist=$(git rev-list --count "${t}..HEAD" 2>/dev/null) || continue
+  if [[ "$dist" -gt 0 && "$dist" -lt "$SMALLEST_DIST" ]]; then
+    SMALLEST_DIST=$dist
+    NEWEST_TAG="$t"
+  fi
+done <<< "$TAG_LIST"
+
+DIFF_PATHS=""
+if [[ -n "$NEWEST_TAG" ]]; then
+  DIFF_PATHS=$(git diff --name-only "${NEWEST_TAG}..HEAD" 2>/dev/null | sort -u | xargs)
+fi
+
+if [[ -z "$DIFF_PATHS" ]]; then
+  FIRST_TAG=$(echo "$TAG_LIST" | head -1 | cut -d'|' -f2)
+  info "no changes since ${FIRST_TAG}"
+  echo "$FIRST_TAG"
+  exit 0
+fi
+
+info "changes since ${NEWEST_TAG}: $DIFF_PATHS"
+
+# ── 3. group by module (only if prefixed tags exist) ─────────────────
+MODULE_LIST=""
+PREFIXED=$(repo_has_prefixed_tags && echo true || echo false)
+
+if [[ "$PREFIXED" == true ]]; then
+  flat_paths=""
+  for path in $DIFF_PATHS; do
+    root="${path%%/*}"
+    if git tag -l "${root}/v*" | grep -q . 2>/dev/null; then
+      mod="${root}/"
+      existing=$(echo "$MODULE_LIST" | grep "^${mod}|" | head -1 | cut -d'|' -f2- || true)
+      MODULE_LIST=$(echo "$MODULE_LIST" | grep -v "^${mod}|" || true)
+      MODULE_LIST="${MODULE_LIST}"$'\n'"${mod}|${existing} ${path}"
+    else
+      flat_paths="${flat_paths} ${path}"
+    fi
+  done
+  [[ -n "$flat_paths" ]] && MODULE_LIST="${MODULE_LIST}"$'\n'"|${flat_paths}"
+  MODULE_LIST=$(echo "$MODULE_LIST" | sed '/^$/d')
+else
+  MODULE_LIST="|${DIFF_PATHS}"
+fi
 
 if [[ "$PREFIX_SET" == true ]]; then
-  # Prefix known — find nearest tag, then diff from it to HEAD.
-  # This works on both feature branches and the default branch.
-  NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" HEAD 2>/dev/null) || true
-  if [[ -n "$NEAREST_TAG" ]]; then
-    PATHS=$(git diff --name-only "${NEAREST_TAG}..HEAD" -- "${PREFIX%/}/" 2>/dev/null | sort -u | xargs)
+  filtered=$(echo "$MODULE_LIST" | grep -F "${PREFIX}|" | grep "^${PREFIX}|" || true)
+  if [[ -z "$filtered" ]]; then
+    info "no changes for prefix ${PREFIX}"
+    PTAG=""
+    while IFS='|' read -r tp tt; do
+      [[ "$tp" == "$PREFIX" ]] && PTAG="$tt" && break
+    done <<< "$TAG_LIST"
+    echo "${PTAG:-none}"
+    exit 0
   fi
-  [[ -z "$PATHS" ]] && HAS_CHANGES=false
-else
-  # No prefix — detect impact zone from branch diff, then infer prefix.
-  if [[ -z "$PATHS" ]]; then
-    resolve_default_branch
-    MERGE_BASE=$(git merge-base HEAD "${REMOTE}/${DEFAULT_BRANCH}" 2>/dev/null) || true
-    if [[ -n "$MERGE_BASE" ]]; then
-      PATHS=$(git diff --name-only "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+  MODULE_LIST="$filtered"
+fi
+
+# ── 4. resolve per module ────────────────────────────────────────────
+resolve_module() {
+  local mod_prefix="$1" mod_paths="$2"
+  local mod_tag major minor patch bump
+  local target_major target_minor target_patch
+
+  info "module: ${mod_prefix:-<root>}"
+
+  mod_tag=""
+  while IFS='|' read -r tp tt; do
+    if [[ "$tp" == "$mod_prefix" ]]; then
+      mod_tag="$tt"
+      break
     fi
-    if [[ -z "$PATHS" ]]; then
-      PATHS=$(git diff --name-only HEAD 2>/dev/null || true)
-      UNSTAGED=$(git ls-files --others --exclude-standard 2>/dev/null || true)
-      [[ -n "$UNSTAGED" ]] && PATHS="${PATHS}"$'\n'"${UNSTAGED}"
-    fi
-    PATHS=$(echo "$PATHS" | sort -u | xargs)
-    [[ -z "$PATHS" ]] && HAS_CHANGES=false
+  done <<< "$TAG_LIST"
+
+  if [[ -z "$mod_tag" ]]; then
+    echo "${mod_prefix}v0.1.0-rc1"
+    return
   fi
 
-  if [[ "$HAS_CHANGES" == true ]]; then
-    infer_prefix "$PATHS"
-    MATCH_PATTERN="${PREFIX}v*"
-  fi
+  parse_tag "$mod_tag"
+  major=$MAJOR; minor=$MINOR; patch=$PATCH
+  info "  latest: ${mod_tag}"
 
-  if [[ "$HAS_CHANGES" == true ]]; then
-    info "impact zone: $PATHS"
+  bump="$BUMP"
+  if [[ -z "$bump" ]]; then
+    local subjects
     # shellcheck disable=SC2086
-    ANCHOR=$(git log -1 --format=%H -- $PATHS 2>/dev/null) || true
+    subjects=$(git log --format=%s "${mod_tag}..HEAD" -- $mod_paths 2>/dev/null) || true
+    if echo "$subjects" | grep -qE '^feat(\(.+\))?!?:'; then
+      bump="minor"
+    else
+      bump="patch"
+    fi
+  fi
+
+  if [[ "$bump" == "minor" ]]; then
+    info "  bump: minor"
+    target_major=$major; target_minor=$((minor + 1)); target_patch=0
   else
-    ANCHOR=$(git rev-parse HEAD 2>/dev/null) || true
-  fi
-  [[ -n "$ANCHOR" ]] || die "no commits found"
-
-  NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" "$ANCHOR" 2>/dev/null) || true
-fi
-
-# ── no tags → bootstrap ─────────────────────────────────────────────
-if [[ -z "$NEAREST_TAG" ]]; then
-  if [[ "$RELEASE" == true ]]; then
-    CANDIDATE="${PREFIX}v0.1.0"
-  else
-    CANDIDATE="${PREFIX}v0.1.0-rc1"
-  fi
-  info "no prior tag found — bootstrap"
-  if [[ "$TAG" == true || "$RELEASE" == true ]]; then
-    git tag "$CANDIDATE"
-    git push "$REMOTE" "$CANDIDATE"
-    info "tagged and pushed: ${CANDIDATE}"
-  fi
-  echo "$CANDIDATE"
-  exit 0
-fi
-
-parse_tag "$NEAREST_TAG"
-info "nearest tag: $NEAREST_TAG (${PREFIX}v${MAJOR}.${MINOR}.${PATCH})"
-
-# ── no changes → report current version ─────────────────────────────
-if [[ "$HAS_CHANGES" == false ]]; then
-  info "no changes detected — current version"
-  echo "$NEAREST_TAG"
-  exit 0
-fi
-
-# ── determine bump ───────────────────────────────────────────────────
-if [[ -z "$BUMP" ]]; then
-  # shellcheck disable=SC2086
-  SUBJECTS=$(git log --format=%s "${NEAREST_TAG}..HEAD" -- $PATHS 2>/dev/null) || true
-  if echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?!?:'; then
-    BUMP="minor"
-  else
-    BUMP="patch"
-  fi
-fi
-
-if [[ "$BUMP" == "minor" ]]; then
-  info "bump: minor"
-  TARGET_MAJOR=$MAJOR; TARGET_MINOR=$((MINOR + 1)); TARGET_PATCH=0
-else
-  info "bump: patch"
-  TARGET_MAJOR=$MAJOR; TARGET_MINOR=$MINOR; TARGET_PATCH=$((PATCH + 1))
-fi
-
-# ── collision walk ───────────────────────────────────────────────────
-MAX_WALK=50
-WALK=0
-while [[ $WALK -lt $MAX_WALK ]]; do
-  BASE="${PREFIX}v${TARGET_MAJOR}.${TARGET_MINOR}.${TARGET_PATCH}"
-
-  if tag_is_taken "$BASE"; then
-    info "  ${BASE} taken — incrementing patch"
-    TARGET_PATCH=$((TARGET_PATCH + 1))
-    WALK=$((WALK + 1))
-    continue
+    info "  bump: patch"
+    target_major=$major; target_minor=$minor; target_patch=$((patch + 1))
   fi
 
-  EXISTING_RCS=$(git tag -l "${BASE}-rc*" | sort -V)
-  if [[ -n "$EXISTING_RCS" ]]; then
-    LAST_RC=$(echo "$EXISTING_RCS" | tail -1)
-    RC_NUM="${LAST_RC##*-rc}"
-    NEXT_RC=$((RC_NUM + 1))
-  else
-    NEXT_RC=1
-  fi
+  local base candidate walk=0
+  while [[ $walk -lt 50 ]]; do
+    base="${mod_prefix}v${target_major}.${target_minor}.${target_patch}"
 
-  if [[ "$RELEASE" == true ]]; then
-    CANDIDATE="$BASE"
-  else
-    CANDIDATE="${BASE}-rc${NEXT_RC}"
+    if tag_is_taken "$base"; then
+      info "  ${base} taken — incrementing patch"
+      target_patch=$((target_patch + 1))
+      walk=$((walk + 1))
+      continue
+    fi
 
-    if tag_exists_remote "$CANDIDATE"; then
-      info "  ${CANDIDATE} taken on remote — incrementing RC"
-      NEXT_RC=$((NEXT_RC + 1))
-      CANDIDATE="${BASE}-rc${NEXT_RC}"
-      if tag_is_taken "$CANDIDATE"; then
-        TARGET_PATCH=$((TARGET_PATCH + 1))
-        WALK=$((WALK + 1))
+    local existing_rcs last_rc rc_num next_rc
+    existing_rcs=$(git tag -l "${base}-rc*" | sort -V)
+    if [[ -n "$existing_rcs" ]]; then
+      last_rc=$(echo "$existing_rcs" | tail -1)
+      rc_num="${last_rc##*-rc}"
+      next_rc=$((rc_num + 1))
+    else
+      next_rc=1
+    fi
+
+    candidate="${base}-rc${next_rc}"
+
+    if tag_exists_remote "$candidate"; then
+      info "  ${candidate} taken on remote — incrementing RC"
+      next_rc=$((next_rc + 1))
+      candidate="${base}-rc${next_rc}"
+      if tag_is_taken "$candidate"; then
+        target_patch=$((target_patch + 1))
+        walk=$((walk + 1))
         continue
       fi
     fi
-  fi
 
-  info "resolved: ${CANDIDATE}"
-  if [[ "$TAG" == true || "$RELEASE" == true ]]; then
-    git tag "$CANDIDATE"
-    git push "$REMOTE" "$CANDIDATE"
-    info "tagged and pushed: ${CANDIDATE}"
-  fi
-  echo "$CANDIDATE"
-  exit 0
-done
+    info "  proposed: ${candidate}"
+    echo "$candidate"
+    return
+  done
 
-die "exhausted ${MAX_WALK} collision-walk iterations — manual intervention required"
+  die "exhausted collision walk for ${mod_prefix}"
+}
+
+while IFS='|' read -r mod_prefix mod_paths; do
+  resolve_module "$mod_prefix" "$mod_paths"
+done <<< "$MODULE_LIST"
