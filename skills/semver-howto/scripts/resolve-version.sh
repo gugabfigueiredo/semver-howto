@@ -54,6 +54,10 @@ done
 info()  { echo >&2 "[semver] $*"; }
 die()   { echo >&2 "[semver] ERROR: $*"; exit 1; }
 
+# fetch latest refs + tags so we never tag a stale commit
+info "fetching ${REMOTE}..."
+git fetch "$REMOTE" --tags --quiet 2>/dev/null || die "fetch failed — check network/remote"
+
 # resolve target ref — always the remote default branch HEAD
 resolve_target() {
   local branch
@@ -90,6 +94,8 @@ parse_tag() {
 
 create_and_push() {
   local version="$1"
+  # TODO: add retry/walk on collision — currently dies if tag exists.
+  # Consider: push first, handle rejection, retry with next version.
   if tag_is_taken "$version"; then
     die "${version} already exists"
   fi
@@ -284,7 +290,8 @@ resolve_module() {
     base="${mod_prefix}v${target_major}.${target_minor}.${target_patch}"
 
     if tag_is_taken "$base"; then
-      info "  ${base} taken — incrementing patch"
+      info "  WARNING: ${base} already exists — may need cleanup if unexpected"
+      info "  incrementing to next patch..."
       target_patch=$((target_patch + 1))
       walk=$((walk + 1))
       continue
