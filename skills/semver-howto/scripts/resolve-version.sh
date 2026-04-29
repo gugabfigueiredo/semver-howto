@@ -154,41 +154,51 @@ if [[ "$PROMOTE" == true ]]; then
   exit 0
 fi
 
-# ── detect impact zone ───────────────────────────────────────────────
+# ── detect impact zone & resolve nearest tag ────────────────────────
 HAS_CHANGES=true
-if [[ -z "$PATHS" ]]; then
-  resolve_default_branch
-  MERGE_BASE=$(git merge-base HEAD "${REMOTE}/${DEFAULT_BRANCH}" 2>/dev/null) || true
-  if [[ -n "$MERGE_BASE" ]]; then
-    PATHS=$(git diff --name-only "${MERGE_BASE}...HEAD" 2>/dev/null || true)
-  fi
-  if [[ -z "$PATHS" ]]; then
-    PATHS=$(git diff --name-only HEAD 2>/dev/null || true)
-    UNSTAGED=$(git ls-files --others --exclude-standard 2>/dev/null || true)
-    [[ -n "$UNSTAGED" ]] && PATHS="${PATHS}"$'\n'"${UNSTAGED}"
-  fi
-  PATHS=$(echo "$PATHS" | sort -u | xargs)
-  [[ -z "$PATHS" ]] && HAS_CHANGES=false
-fi
-
-# ── infer prefix from paths ─────────────────────────────────────────
-if [[ "$HAS_CHANGES" == true ]]; then
-  infer_prefix "$PATHS"
-fi
-
-# ── resolve nearest tag ─────────────────────────────────────────────
 MATCH_PATTERN="${PREFIX}v*"
 
-if [[ "$HAS_CHANGES" == true ]]; then
-  info "impact zone: $PATHS"
-  # shellcheck disable=SC2086
-  ANCHOR=$(git log -1 --format=%H -- $PATHS 2>/dev/null) || true
+if [[ "$PREFIX_SET" == true ]]; then
+  # Prefix known — find nearest tag, then diff from it to HEAD.
+  # This works on both feature branches and the default branch.
+  NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" HEAD 2>/dev/null) || true
+  if [[ -n "$NEAREST_TAG" ]]; then
+    PATHS=$(git diff --name-only "${NEAREST_TAG}..HEAD" -- "${PREFIX%/}/" 2>/dev/null | sort -u | xargs)
+  fi
+  [[ -z "$PATHS" ]] && HAS_CHANGES=false
 else
-  ANCHOR=$(git rev-parse HEAD 2>/dev/null) || true
-fi
-[[ -n "$ANCHOR" ]] || die "no commits found"
+  # No prefix — detect impact zone from branch diff, then infer prefix.
+  if [[ -z "$PATHS" ]]; then
+    resolve_default_branch
+    MERGE_BASE=$(git merge-base HEAD "${REMOTE}/${DEFAULT_BRANCH}" 2>/dev/null) || true
+    if [[ -n "$MERGE_BASE" ]]; then
+      PATHS=$(git diff --name-only "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+    fi
+    if [[ -z "$PATHS" ]]; then
+      PATHS=$(git diff --name-only HEAD 2>/dev/null || true)
+      UNSTAGED=$(git ls-files --others --exclude-standard 2>/dev/null || true)
+      [[ -n "$UNSTAGED" ]] && PATHS="${PATHS}"$'\n'"${UNSTAGED}"
+    fi
+    PATHS=$(echo "$PATHS" | sort -u | xargs)
+    [[ -z "$PATHS" ]] && HAS_CHANGES=false
+  fi
 
-NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" "$ANCHOR" 2>/dev/null) || true
+  if [[ "$HAS_CHANGES" == true ]]; then
+    infer_prefix "$PATHS"
+    MATCH_PATTERN="${PREFIX}v*"
+  fi
+
+  if [[ "$HAS_CHANGES" == true ]]; then
+    info "impact zone: $PATHS"
+    # shellcheck disable=SC2086
+    ANCHOR=$(git log -1 --format=%H -- $PATHS 2>/dev/null) || true
+  else
+    ANCHOR=$(git rev-parse HEAD 2>/dev/null) || true
+  fi
+  [[ -n "$ANCHOR" ]] || die "no commits found"
+
+  NEAREST_TAG=$(git describe --tags --abbrev=0 --match "$MATCH_PATTERN" "$ANCHOR" 2>/dev/null) || true
+fi
 
 # ── no tags → bootstrap ─────────────────────────────────────────────
 if [[ -z "$NEAREST_TAG" ]]; then
