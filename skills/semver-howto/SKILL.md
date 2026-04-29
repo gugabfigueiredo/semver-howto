@@ -23,7 +23,12 @@ resolve-version.sh --patch                  # force patch bump in proposals
 1. Run the script with no action flags → read proposed tags from stdout.
 2. Read the diff for each proposed module. Decide the correct bump level
    yourself — the script guesses from commit messages but you judge from
-   the actual code (new API = minor, bug fix = patch, docs-only = skip).
+   the actual code:
+   - **minor**: new public API, new feature, new parameter, new behavior
+   - **patch**: bug fix, internal refactor, dependency update
+   - **skip**: README, comments, CI config, non-functional files
+   Files that change runtime behavior or user-facing contracts (including
+   skill instructions, config schemas, CLI flags) are functional, not docs.
 3. For each approved proposal, call back with `--tag <version>` or
    `--release <version>`. Adjust the version if your evaluation differs
    from the script's proposal.
