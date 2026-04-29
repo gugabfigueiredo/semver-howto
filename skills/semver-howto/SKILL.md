@@ -21,10 +21,12 @@ resolve-version.sh --patch                  # force patch bump in proposals
 ## Workflow
 
 1. Run the script with no action flags → read proposed tags from stdout.
-2. Evaluate the proposals. Drop any that aren't warranted (e.g. only docs
-   changed, or files don't justify a version bump).
+2. Read the diff for each proposed module. Decide the correct bump level
+   yourself — the script guesses from commit messages but you judge from
+   the actual code (new API = minor, bug fix = patch, docs-only = skip).
 3. For each approved proposal, call back with `--tag <version>` or
-   `--release <version>`.
+   `--release <version>`. Adjust the version if your evaluation differs
+   from the script's proposal.
 
 ## Constraints
 
