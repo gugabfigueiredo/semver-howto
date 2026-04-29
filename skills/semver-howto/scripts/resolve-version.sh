@@ -54,6 +54,25 @@ done
 info()  { echo >&2 "[semver] $*"; }
 die()   { echo >&2 "[semver] ERROR: $*"; exit 1; }
 
+# resolve target ref — always the remote default branch HEAD
+resolve_target() {
+  local branch
+  branch=$(git symbolic-ref "refs/remotes/${REMOTE}/HEAD" 2>/dev/null \
+    | sed "s|refs/remotes/${REMOTE}/||") || true
+  if [[ -z "$branch" ]]; then
+    for b in main master; do
+      if git rev-parse --verify "${REMOTE}/${b}" &>/dev/null; then
+        branch="$b"; break
+      fi
+    done
+  fi
+  [[ -n "$branch" ]] || die "cannot determine default branch"
+  echo "${REMOTE}/${branch}"
+}
+
+TARGET_REF=$(resolve_target)
+info "target: ${TARGET_REF}"
+
 tag_exists_local()  { git tag -l "$1" | grep -q .; }
 tag_exists_remote() { git ls-remote --tags "$REMOTE" "refs/tags/$1" 2>/dev/null | grep -q .; }
 tag_is_taken()      { tag_exists_local "$1" || tag_exists_remote "$1"; }
@@ -74,9 +93,9 @@ create_and_push() {
   if tag_is_taken "$version"; then
     die "${version} already exists"
   fi
-  git tag "$version"
+  git tag "$version" "$TARGET_REF"
   git push "$REMOTE" "$version"
-  info "tagged and pushed: ${version}"
+  info "tagged and pushed: ${version} (at ${TARGET_REF})"
   echo "$version"
 }
 
@@ -125,7 +144,7 @@ fi
 # latest_tags → one line per prefix: "prefix|tag" (highest version per prefix)
 latest_tags() {
   local all_tags tag prefix seen=""
-  all_tags=$(git tag --merged HEAD --sort=-version:refname | grep -E '(^|/)v[0-9]+\.[0-9]+\.[0-9]+') || true
+  all_tags=$(git tag --merged "$TARGET_REF" --sort=-version:refname | grep -E '(^|/)v[0-9]+\.[0-9]+\.[0-9]+') || true
   [[ -z "$all_tags" ]] && return
   while IFS= read -r tag; do
     [[ -z "$tag" ]] && continue
@@ -157,7 +176,7 @@ echo "$TAG_LIST" | while IFS='|' read -r _ t; do info "  ${t}"; done
 NEWEST_TAG=""
 SMALLEST_DIST=999999
 while IFS='|' read -r _ t; do
-  dist=$(git rev-list --count "${t}..HEAD" 2>/dev/null) || continue
+  dist=$(git rev-list --count "${t}..${TARGET_REF}" 2>/dev/null) || continue
   if [[ "$dist" -gt 0 && "$dist" -lt "$SMALLEST_DIST" ]]; then
     SMALLEST_DIST=$dist
     NEWEST_TAG="$t"
@@ -166,7 +185,7 @@ done <<< "$TAG_LIST"
 
 DIFF_PATHS=""
 if [[ -n "$NEWEST_TAG" ]]; then
-  DIFF_PATHS=$(git diff --name-only "${NEWEST_TAG}..HEAD" 2>/dev/null | sort -u | xargs)
+  DIFF_PATHS=$(git diff --name-only "${NEWEST_TAG}..${TARGET_REF}" 2>/dev/null | sort -u | xargs)
 fi
 
 if [[ -z "$DIFF_PATHS" ]]; then
@@ -244,7 +263,7 @@ resolve_module() {
   if [[ -z "$bump" ]]; then
     local subjects
     # shellcheck disable=SC2086
-    subjects=$(git log --format=%s "${mod_tag}..HEAD" -- $mod_paths 2>/dev/null) || true
+    subjects=$(git log --format=%s "${mod_tag}..${TARGET_REF}" -- $mod_paths 2>/dev/null) || true
     if echo "$subjects" | grep -qE '^feat(\(.+\))?!?:'; then
       bump="minor"
     else
