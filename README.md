@@ -45,31 +45,28 @@ git clone https://github.com/gugabfigueiredo/semver-howto.git
 
 Update: `git -C ~/.local/share/agent-skills/semver-howto pull`
 
-### GitHub Actions
+### Agentic workflows
 
-```yaml
-- uses: gugabfigueiredo/semver-howto@master
-  id: semver
-  with:
-    tag: "true"  # creates and pushes the RC tag
-# ${{ steps.semver.outputs.version }}
-```
+See [`examples/agentic-workflow.md`](examples/agentic-workflow.md) for a
+GitHub agentic workflow template that runs the skill on push and proposes
+tags via issue.
 
 ## Usage
 
 ```sh
-./skills/semver-howto/scripts/resolve-version.sh              # propose next -rc[n]
-./skills/semver-howto/scripts/resolve-version.sh --tag        # resolve, tag, and push RC
-./skills/semver-howto/scripts/resolve-version.sh --minor      # force minor bump
-./skills/semver-howto/scripts/resolve-version.sh --patch      # force patch bump
-./skills/semver-howto/scripts/resolve-version.sh --promote    # propose clean tag (HITL)
-./skills/semver-howto/scripts/resolve-version.sh --help       # all flags
+./skills/semver-howto/scripts/resolve-version.sh                          # propose next -rc[n] per module
+./skills/semver-howto/scripts/resolve-version.sh --tag <version>          # create and push a specific RC
+./skills/semver-howto/scripts/resolve-version.sh --release <version>      # create and push a specific clean tag
+./skills/semver-howto/scripts/resolve-version.sh --promote                # promote highest RC to clean release
+./skills/semver-howto/scripts/resolve-version.sh --minor                  # force minor bump in proposals
+./skills/semver-howto/scripts/resolve-version.sh --patch                  # force patch bump in proposals
+./skills/semver-howto/scripts/resolve-version.sh --help                   # all flags
 ```
 
 ## Rules
 
-- **RC-only**: autonomous output is always `-rc[n]`. Clean tags are never created automatically.
-- **`--tag`**: creates and pushes RC tags. Safe for CI and agents.
-- **`--promote`**: proposes a clean release tag. Human must approve, tag, and push.
+- **Dry-run by default**: proposes tags on stdout, no side effects.
+- **`--tag`**: creates and pushes RC tags only. Safe for agents and CI.
+- **`--release` / `--promote`**: create clean tags. Only when explicitly requested.
 - **`--minor` / `--patch`**: override commit-message bump detection when the agent evaluates the true scope.
 - **Collision-aware**: walks past taken addresses locally and on the remote via targeted `git ls-remote`.
